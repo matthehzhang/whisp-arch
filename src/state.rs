@@ -2,6 +2,10 @@
 
 use std::sync::{Arc, Mutex};
 
+/// Spec-defined shared type. Retained as public API; the current owner loop
+/// tracks sessions via the generation counter on `Inner`, so this is not yet
+/// constructed internally.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SessionId(pub u64);
 
@@ -34,5 +38,11 @@ impl Shared {
             enabled: true,
             source: None,
         })))
+    }
+}
+
+impl Default for Shared {
+    fn default() -> Self {
+        Shared::new()
     }
 }
