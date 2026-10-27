@@ -8,6 +8,28 @@ from whisp import mac_system
 from whisp.config import Settings
 
 
+def test_revoking_permission_stops_listener_and_capture(monkeypatch):
+    from whisp.app import App
+
+    calls = []
+    allowed = {"Microphone": True, "Accessibility": True, "Input monitoring": True}
+    monkeypatch.setattr(mac_system, "permission_status", lambda: {**allowed, "Microphone": False})
+    app = SimpleNamespace(
+        permissions=allowed,
+        permission_labels={
+            key: SimpleNamespace(configure=lambda **kwargs: None) for key in allowed
+        },
+        hotkey=SimpleNamespace(stop=lambda: calls.append("stop listener")),
+        controller=SimpleNamespace(session=object(), cancel=lambda: calls.append("cancel capture")),
+        settings=Settings(setup_complete=False),
+        render=lambda: None,
+        show_notice=lambda message: calls.append(message),
+    )
+    App.refresh_permissions(app)
+    assert calls == ["stop listener", "cancel capture"]
+    assert app.hotkey is None
+
+
 def test_setup_choices_survive_restart(tmp_path):
     settings = Settings(
         mode="toggle", haptics=False, sounds=True, launch_at_login=False, setup_complete=True

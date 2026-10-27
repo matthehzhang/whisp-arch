@@ -572,8 +572,12 @@ class App:
                     text=f"{kind} · {'Allowed' if allowed else 'Permission needed'}"
                 )
             if self.permissions != previous:
-                if not all(self.permissions.values()) and self.controller.session:
-                    self.controller.cancel()
+                if not all(self.permissions.values()):
+                    if self.hotkey:
+                        self.hotkey.stop()
+                        self.hotkey = None
+                    if self.controller.session:
+                        self.controller.cancel()
                 if all(self.permissions.values()):
                     self._install_hotkey()
             elif all(self.permissions.values()) and self.hotkey is None:
