@@ -1,0 +1,72 @@
+name: Portable desktop builds
+
+on:
+  workflow_dispatch:
+  push:
+    paths: ["portable/**", ".github/workflows/portable.yml"]
+  pull_request:
+    paths: ["portable/**", ".github/workflows/portable.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: windows-x64
+          - os: macos-15
+            label: macos-apple-silicon
+          - os: macos-15-intel
+            label: macos-intel
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: portable
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: portable/uv.lock
+      - name: Install locked dependencies
+        run: uv sync --locked --python 3.12
+      - name: Lint and test lifecycle, audio, and delivery
+        run: |
+          uv run ruff check whisp tests launcher.py package.py
+          uv run pytest -q
+      - name: Check native runtime imports and UI
+        run: uv run python -m whisp --self-test source-smoke.json
+      - name: Build desktop app
+        run: uv run pyinstaller --noconfirm Whisp.spec
+      - name: Verify frozen application
+        run: |
+          uv run python - <<'PY'
+          from pathlib import Path
+          import subprocess, sys
+          executable = Path("dist/Whisp/Whisp.exe") if sys.platform == "win32" else Path("dist/Whisp.app/Contents/MacOS/Whisp")
+          report = Path("frozen-smoke.json").resolve()
+          subprocess.run([str(executable.resolve()), "--self-test", str(report)], check=True, timeout=90)
+          assert report.exists(), "Frozen application did not produce its runtime report"
+          print(report.read_text())
+          PY
+      - name: Package
+        run: uv run python package.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Whisp-${{ matrix.label }}
+          path: |
+            portable/artifacts/*.zip
+            portable/README.md
+            portable/source-smoke.json
+            portable/frozen-smoke.json
+          if-no-files-found: error
+          retention-days: 14
