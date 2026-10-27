@@ -11,7 +11,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
@@ -25,8 +25,46 @@ pub enum HotkeyEvent {
     Cancel, // Cancel = Esc while recording
 }
 
-/// The push-to-talk key.
-const PTT: KeyCode = KeyCode::KEY_RIGHTCTRL;
+/// Window identity is sampled on key release, before any transcription queue.
+#[derive(Debug, Clone)]
+pub struct HotkeySignal {
+    pub event: HotkeyEvent,
+    pub target: Option<crate::inject::WindowTarget>,
+}
+
+/// Default push-to-talk key. Override with `WHISP_PTT_KEY` (rightctrl, f13, f14,
+/// f15, capslock, pause, scrolllock, menu). With keyd remapping Right Ctrl to F13
+/// (packaging/keyd-default.conf), `WHISP_PTT_KEY=f13` keeps the physical key but
+/// makes it inert to the compositor, which is what allows live typing while held.
+const PTT_DEFAULT: KeyCode = KeyCode::KEY_RIGHTCTRL;
+
+static PTT_KEY: OnceLock<KeyCode> = OnceLock::new();
+
+/// Parse a `WHISP_PTT_KEY` value.
+fn parse_key(name: &str) -> Option<KeyCode> {
+    Some(match name.trim().to_ascii_lowercase().as_str() {
+        "rightctrl" | "rctrl" => KeyCode::KEY_RIGHTCTRL,
+        "f13" => KeyCode::KEY_F13,
+        "f14" => KeyCode::KEY_F14,
+        "f15" => KeyCode::KEY_F15,
+        "capslock" | "caps" => KeyCode::KEY_CAPSLOCK,
+        "pause" => KeyCode::KEY_PAUSE,
+        "scrolllock" => KeyCode::KEY_SCROLLLOCK,
+        "menu" | "compose" => KeyCode::KEY_COMPOSE,
+        _ => return None,
+    })
+}
+
+/// The configured push-to-talk key (read once from the environment).
+pub fn ptt_key() -> KeyCode {
+    *PTT_KEY.get_or_init(|| match std::env::var("WHISP_PTT_KEY") {
+        Ok(v) if !v.trim().is_empty() => parse_key(&v).unwrap_or_else(|| {
+            eprintln!("[whisp] hotkey: unknown WHISP_PTT_KEY {v:?}; using Right Ctrl");
+            PTT_DEFAULT
+        }),
+        _ => PTT_DEFAULT,
+    })
+}
 
 /// Keys whose physical "down" state must block injection. PTT (Right Ctrl) is one
 /// of these, so checking this list also covers the PTT key per spec.
@@ -41,20 +79,22 @@ const MODIFIERS: [KeyCode; 8] = [
     KeyCode::KEY_RIGHTMETA,
 ];
 
-/// A device is a PTT candidate iff it reports the Right Ctrl key (i.e. a keyboard).
+/// A device is a PTT candidate iff it reports the configured PTT key.
 fn is_candidate(dev: &Device) -> bool {
-    dev.supported_keys().is_some_and(|keys| keys.contains(PTT))
+    dev.supported_keys().is_some_and(|keys| keys.contains(ptt_key()))
 }
 
 /// Pure classification of a raw key (code, value) into an optional `HotkeyEvent`.
 /// value: 1 = press, 0 = release, 2 = autorepeat (ignored for PTT).
 fn classify(code: KeyCode, value: i32) -> Option<HotkeyEvent> {
-    match code {
-        PTT => match value {
+    if code == ptt_key() {
+        return match value {
             1 => Some(HotkeyEvent::PttDown),
             0 => Some(HotkeyEvent::PttUp),
             _ => None, // ignore autorepeat while holding
-        },
+        };
+    }
+    match code {
         KeyCode::KEY_ESC => match value {
             1 => Some(HotkeyEvent::Cancel),
             _ => None,
@@ -66,7 +106,7 @@ fn classify(code: KeyCode, value: i32) -> Option<HotkeyEvent> {
 /// Spawn the listener. Enumerates `/dev/input/event*`, keeps every device that
 /// reports Right Ctrl, and reads each in its own thread. Dead devices are dropped;
 /// a supervisor re-enumerates every 2 s to pick up hotplugged keyboards.
-pub fn spawn_listener(tx: Sender<HotkeyEvent>) -> Result<()> {
+pub fn spawn_listener(tx: Sender<HotkeySignal>) -> Result<()> {
     // Paths we currently have a reader thread for. A reader removes its own path
     // on exit so the supervisor re-adopts the device on the next sweep.
     let active: Arc<Mutex<HashSet<PathBuf>>> = Arc::new(Mutex::new(HashSet::new()));
@@ -115,7 +155,7 @@ pub fn spawn_listener(tx: Sender<HotkeyEvent>) -> Result<()> {
 
 /// Blocking read loop for one device. Returns (letting the thread exit) on any
 /// read error, which drops the device from the active set so it can be re-adopted.
-fn read_device(mut dev: Device, path: &Path, tx: &Sender<HotkeyEvent>) {
+fn read_device(mut dev: Device, path: &Path, tx: &Sender<HotkeySignal>) {
     loop {
         let events = match dev.fetch_events() {
             Ok(events) => events,
@@ -130,7 +170,12 @@ fn read_device(mut dev: Device, path: &Path, tx: &Sender<HotkeyEvent>) {
         for ev in events {
             if let EventSummary::Key(_, code, value) = ev.destructure() {
                 if let Some(hk) = classify(code, value) {
-                    if tx.send(hk).is_err() {
+                    let target = if hk == HotkeyEvent::PttUp {
+                        crate::inject::capture_target()
+                    } else {
+                        None
+                    };
+                    if tx.send(HotkeySignal { event: hk, target }).is_err() {
                         // Receiver gone: the daemon is shutting down.
                         return;
                     }
@@ -174,13 +219,23 @@ mod tests {
 
     #[test]
     fn ptt_press_and_release() {
-        assert_eq!(classify(PTT, 1), Some(HotkeyEvent::PttDown));
-        assert_eq!(classify(PTT, 0), Some(HotkeyEvent::PttUp));
+        assert_eq!(classify(ptt_key(), 1), Some(HotkeyEvent::PttDown));
+        assert_eq!(classify(ptt_key(), 0), Some(HotkeyEvent::PttUp));
     }
 
     #[test]
     fn ptt_autorepeat_ignored() {
-        assert_eq!(classify(PTT, 2), None);
+        assert_eq!(classify(ptt_key(), 2), None);
+    }
+
+    #[test]
+    fn key_names_parse() {
+        assert_eq!(parse_key("f13"), Some(KeyCode::KEY_F13));
+        assert_eq!(parse_key("RightCtrl"), Some(KeyCode::KEY_RIGHTCTRL));
+        assert_eq!(parse_key("caps"), Some(KeyCode::KEY_CAPSLOCK));
+        assert_eq!(parse_key("bogus"), None);
+        assert!(MODIFIERS.contains(&KeyCode::KEY_RIGHTCTRL));
+        assert!(!MODIFIERS.contains(&KeyCode::KEY_F13));
     }
 
     #[test]
@@ -197,9 +252,9 @@ mod tests {
     }
 
     #[test]
-    fn ptt_is_in_modifier_set() {
-        // Checking modifiers must also cover the PTT key (spec requirement).
-        assert!(MODIFIERS.contains(&PTT));
+    fn default_ptt_is_in_modifier_set() {
+        // The default key (Right Ctrl) is a modifier, so injection must wait for it.
+        assert!(MODIFIERS.contains(&PTT_DEFAULT));
     }
 
     /// Sanity check that the machine actually exposes a keyboard we can listen on.
@@ -209,6 +264,6 @@ mod tests {
     #[ignore]
     fn finds_a_keyboard() {
         let count = evdev::enumerate().filter(|(_, d)| is_candidate(d)).count();
-        assert!(count >= 1, "expected at least one KEY_RIGHTCTRL device");
+        assert!(count >= 1, "expected at least one device with the PTT key");
     }
 }

@@ -11,3 +11,4 @@ libpulse-simple-binding = "2.29.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 whisper-rs = "0.16.0"
+tungstenite = "0.30"

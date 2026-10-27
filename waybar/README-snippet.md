@@ -1,75 +1,43 @@
-# waybar integration for whisp-arch
+# waybar module: `custom/whisper`
 
-The daemon writes `$XDG_RUNTIME_DIR/whisp-arch/status.json` on every state
-change. The module below `cat`s that file each second and click-toggles the
-daemon over its control socket via `whisp-arch --toggle`.
+Live dictation state in the bar. `waybar/whisper.py` is a continuous `exec` module: it subscribes to
+the daemon's events socket and prints a JSON line whenever the display changes. While Right Alt is
+held it renders the mic spectrum as block glyphs (`▁▂▃▄▅▆▇█`, 8 bands at ~25 fps, same style as the
+media animation), then a processing wave, then the cleaned text with a check mark for a second.
 
-## 1. Install the exec script
-
-Copy `whisper.sh` somewhere on disk and make it executable:
-
-```sh
-install -Dm755 waybar/whisper.sh ~/.config/waybar/scripts/whisper.sh
-```
-
-## 2. Module config
-
-Add to `~/.config/waybar/config` (JSONC). Put `custom/whisper` in one of your
-`modules-left/center/right` arrays, then add the block:
+Put it first in `modules-right` so it grows leftward when it expands:
 
 ```jsonc
+"modules-right": ["custom/whisper", ...],
+
 "custom/whisper": {
-    "exec": "~/.config/waybar/scripts/whisper.sh",
-    "return-type": "json",
-    "interval": 1,
-    "on-click": "whisp-arch --toggle"
+  "exec": "~/projects/mini/whisp-arch/waybar/whisper.py",
+  "return-type": "json",
+  "escape": true,
+  "on-click": "~/projects/mini/whisp-arch/target/release/whisp-arch --toggle"
 }
 ```
 
-- `return-type: json` — the script emits `{text, class, tooltip}` per line.
-- `interval: 1` — poll the status file once a second.
-- `on-click` — sends `toggle` to the control socket, flipping enabled/disabled
-  (only meaningful while the headset is connected).
-
-## 3. CSS
-
-Add to `~/.config/waybar/style.css`. The `class` field selects one of these:
+CSS (`style.css`), pink while listening, green flash on completion, amber when the local whisper
+fallback was used:
 
 ```css
-#custom-whisper {
-    padding: 0 8px;
-    margin: 0 2px;
-}
-
-/* Headset connected, dictation armed */
-#custom-whisper.ready {
-    color: #a6e3a1;
-}
-
-/* Actively capturing audio */
-#custom-whisper.recording {
-    color: #f38ba8;
-}
-
-/* Running whisper on the captured audio */
-#custom-whisper.transcribing {
-    color: #f9e2af;
-}
-
-/* Headset present but toggled off */
-#custom-whisper.disabled {
-    color: #6c7086;
-}
-
-/* No headset / daemon not running (dim) */
-#custom-whisper.missing {
-    color: #45475a;
-}
+@define-color whisp-pink rgba(255, 121, 198, 1);
+@keyframes whisp-pulse { from { color: @whisp-pink; } to { color: rgba(255, 179, 221, 1); } }
+#custom-whisper { color: @dark-5; margin: 5px 14px 5px 4px; font-size: 15px; }
+#custom-whisper.missing, #custom-whisper.disabled { color: @dark-6; }
+#custom-whisper.recording { color: @whisp-pink; font-size: 11px; animation: whisp-pulse 1.1s ease-in-out infinite alternate; }
+#custom-whisper.transcribing { color: @whisp-pink; font-size: 11px; opacity: 0.75; }
+#custom-whisper.done { color: #42ff9f; font-size: 12px; }
+#custom-whisper.fallback { color: rgba(255, 184, 77, 1); font-size: 11px; }
+#custom-whisper.error { color: rgba(227, 81, 73, 1); }
 ```
 
-## Notes
+Classes: `missing` (headset absent / daemon down), `disabled`, `ready`, `recording`, `transcribing`,
+`done`, `fallback`, `error`. Click toggles the daemon on/off.
 
-- The icons are Nerd Font glyphs (`󰍬`, `󰍭`, `󰋐`, `󰦖`). Use a Nerd-Font-patched
-  bar font or they render as tofu.
-- If the daemon is not running, `whisper.sh` emits a `missing`-class
-  "daemon not running" line so the module never disappears.
+`whisper.sh` (polling the status file) is the older, minimal variant and still works if you prefer a
+static icon.
+
+Test without speaking: `overlay/fake-events.py` binds the events socket and plays a scripted dictation
+(stop the daemon first, or it owns the socket).

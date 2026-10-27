@@ -7,6 +7,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Serialize;
 
@@ -33,19 +34,19 @@ impl StatusLine {
                 state: "headset-missing",
                 text: "\u{f02d0}", // 󰋐 headset (dim via CSS)
                 class: "missing",
-                tooltip: "whisp: headset not connected",
+                tooltip: "whisp: no microphone source",
             },
             DaemonState::Disabled => StatusLine {
                 state: "disabled",
                 text: "\u{f036d}", // 󰍭 mic-off
                 class: "disabled",
-                tooltip: "whisp: disabled (XM5 connected)",
+                tooltip: "whisp: disabled",
             },
             DaemonState::Ready => StatusLine {
                 state: "ready",
                 text: "\u{f036c}", // 󰍬 mic
                 class: "ready",
-                tooltip: "whisp: ready (XM5 connected)",
+                tooltip: "whisp: ready (hold Right Alt)",
             },
             DaemonState::Recording => StatusLine {
                 state: "recording",
@@ -110,6 +111,76 @@ pub fn write_status(state: &DaemonState) {
     if let Err(e) = write_status_inner(&line) {
         eprintln!("[whisp] write_status failed: {e:#}");
     }
+    // Also tell the overlay.
+    publish(&format!(r#"{{"ev":"state","state":"{}"}}"#, line.state));
+}
+
+// ---------------------------------------------------------------------------
+// Events socket: newline-delimited JSON broadcast to every connected subscriber
+// (the overlay). `$XDG_RUNTIME_DIR/whisp-arch.events`.
+// ---------------------------------------------------------------------------
+
+static EVENT_CLIENTS: OnceLock<Arc<Mutex<Vec<UnixStream>>>> = OnceLock::new();
+
+/// Events socket path.
+pub fn events_path() -> PathBuf {
+    runtime_base().join("whisp-arch.events")
+}
+
+/// Start accepting event subscribers on a background thread. Non-fatal on
+/// failure (the overlay just gets no events).
+pub fn spawn_events() -> anyhow::Result<()> {
+    let path = events_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(anyhow::Error::from(e)),
+    }
+    let listener = UnixListener::bind(&path)?;
+    let clients = EVENT_CLIENTS
+        .get_or_init(|| Arc::new(Mutex::new(Vec::new())))
+        .clone();
+    eprintln!("[whisp] events socket listening at {}", path.display());
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            match conn {
+                Ok(stream) => {
+                    // Never let a slow subscriber block the owner thread.
+                    let _ = stream.set_nonblocking(true);
+                    if let Ok(mut v) = clients.lock() {
+                        v.push(stream);
+                    }
+                }
+                Err(e) => eprintln!("[whisp] events accept error: {e:#}"),
+            }
+        }
+    });
+    Ok(())
+}
+
+/// Broadcast one JSON event line to all subscribers; drops subscribers whose
+/// socket is gone or full.
+pub fn publish(json: &str) {
+    let Some(clients) = EVENT_CLIENTS.get() else {
+        return;
+    };
+    let Ok(mut v) = clients.lock() else {
+        return;
+    };
+    if v.is_empty() {
+        return;
+    }
+    let mut line = json.to_string();
+    line.push('\n');
+    v.retain_mut(|s| s.write_all(line.as_bytes()).is_ok());
+}
+
+/// JSON-encode a string (with quotes) for embedding in an event line.
+pub fn json_str(s: &str) -> String {
+    serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string())
 }
 
 fn write_status_inner(line: &StatusLine) -> anyhow::Result<()> {

@@ -1,0 +1,28 @@
+[Unit]
+Description=whisp gateway on the laptop: Deepgram streaming ASR + cleanup LLM on the compute box
+# Dictation no longer depends on the desktop being alive: audio goes laptop -> Deepgram directly.
+# Cleanup still uses llama-swap on the compute box when reachable; otherwise raw text is returned (cleaned=false).
+# Key: ~/.config/whisp/env containing DEEPGRAM_API_KEY=...  (chmod 600; never in the repo)
+# install -Dm644 packaging/whisp-gateway.service ~/.config/systemd/user/whisp-gateway.service
+# systemctl --user daemon-reload && systemctl --user enable --now whisp-gateway
+After=network-online.target
+ConditionPathExists=%h/.config/whisp/env
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/whisp/env
+Environment=WHISP_ASR_BACKEND=deepgram
+Environment=WHISP_GATEWAY_HOST=127.0.0.1
+Environment=WHISP_GATEWAY_PORT=8082
+Environment=WHISP_LLM_URL=http://100.122.171.110:8081/v1/chat/completions
+Environment=WHISP_LLM_CONNECT_TIMEOUT=0.8
+# Deepgram output is already punctuated and capitalized with fillers removed; the LLM pass costs ~2 s
+# for stutter/self-correction repair. Off by default; set WHISP_CLEANUP=1 to bring it back.
+Environment=WHISP_CLEANUP=0
+Environment=WHISP_DICT_FILE=%h/.config/whisp/dictionary.txt
+ExecStart=%h/.local/share/whisp/venv/bin/python %h/projects/mini/whisp-arch/desktop/compute/srv/whisp/gateway/gateway.py
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

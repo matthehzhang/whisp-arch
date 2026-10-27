@@ -1,0 +1,15 @@
+[Unit]
+Description=whisp-arch dictation overlay (GTK4 layer-shell pill)
+After=graphical-session.target whisp-arch.service
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/projects/mini/whisp-arch/overlay/whisp-overlay.py
+Restart=on-failure
+RestartSec=2
+# Needs WAYLAND_DISPLAY / XDG_RUNTIME_DIR from the session (same import-environment
+# step as whisp-arch.service).
+
+[Install]
+WantedBy=graphical-session.target
