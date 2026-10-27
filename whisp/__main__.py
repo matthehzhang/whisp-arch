@@ -31,14 +31,34 @@ def self_test(report: Path):
         def work(self, job, done):
             pass
 
-    ui = SmokeApp(root)
+        def refresh_permissions(self):
+            pass
+
+    ui = SmokeApp(root, native=sys.platform == "darwin")
     for state in ("setup", "ready", "recording", "transcribing"):
         ui.controller.update(state, "Runtime check")
         root.update_idletasks()
+    mac_shell_checked = False
+    if sys.platform == "darwin":
+        import AVFoundation
+        from AppKit import NSHapticFeedbackManager
+        from ServiceManagement import SMAppService
+
+        assert hasattr(SMAppService, "mainAppService")
+        assert hasattr(NSHapticFeedbackManager, "defaultPerformer")
+        assert hasattr(AVFoundation.AVCaptureDevice, "requestAccessForMediaType_completionHandler_")
+        shell = ui.shell
+        shell.update("recording", "Runtime check")
+        root.update_idletasks()
+        assert not shell.panel.isKeyWindow(), "Recording indicator must not steal focus"
+        shell.update("ready", "Runtime check")
+        shell.close()
+        mac_shell_checked = True
     root.destroy()
     native = Desktop()
     result = {
         "platform": sys.platform,
+        "mac_menu_and_indicator": mac_shell_checked,
         "native_adapter": type(native.native).__name__,
         "audio_host_apis": len(sounddevice.query_hostapis()),
         "resampled_samples": len(to_16k(np.zeros(48000, np.float32), 48000)),

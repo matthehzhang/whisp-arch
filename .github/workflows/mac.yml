@@ -1,11 +1,11 @@
-name: Portable desktop builds
+name: Mac app and installer
 
 on:
   workflow_dispatch:
   push:
-    paths: ["portable/**", ".github/workflows/portable.yml"]
+    branches: [main, mac]
   pull_request:
-    paths: ["portable/**", ".github/workflows/portable.yml"]
+    branches: [main, mac]
 
 permissions:
   contents: read
@@ -16,8 +16,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: windows-latest
-            label: windows-x64
           - os: macos-15
             label: macos-apple-silicon
           - os: macos-15-intel
@@ -26,7 +24,6 @@ jobs:
     timeout-minutes: 35
     defaults:
       run:
-        working-directory: portable
         shell: bash
     steps:
       - uses: actions/checkout@v4
@@ -36,7 +33,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-          cache-dependency-glob: portable/uv.lock
+          cache-dependency-glob: uv.lock
       - name: Install locked dependencies
         run: uv sync --locked --python 3.12
       - name: Lint and test lifecycle, audio, and delivery
@@ -52,7 +49,7 @@ jobs:
           uv run python - <<'PY'
           from pathlib import Path
           import subprocess, sys
-          executable = Path("dist/Whisp/Whisp.exe") if sys.platform == "win32" else Path("dist/Whisp.app/Contents/MacOS/Whisp")
+          executable = Path("dist/Whisp.app/Contents/MacOS/Whisp")
           report = Path("frozen-smoke.json").resolve()
           subprocess.run([str(executable.resolve()), "--self-test", str(report)], check=True, timeout=90)
           assert report.exists(), "Frozen application did not produce its runtime report"
@@ -64,9 +61,10 @@ jobs:
         with:
           name: Whisp-${{ matrix.label }}
           path: |
-            portable/artifacts/*.zip
-            portable/README.md
-            portable/source-smoke.json
-            portable/frozen-smoke.json
+            artifacts/*.dmg
+            artifacts/*.sha256
+            README.md
+            source-smoke.json
+            frozen-smoke.json
           if-no-files-found: error
           retention-days: 14

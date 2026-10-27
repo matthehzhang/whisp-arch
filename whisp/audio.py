@@ -124,7 +124,7 @@ def cue_samples(start: bool, rate: int) -> np.ndarray:
     parts = []
     for hz in notes:
         parts.extend(
-            [0.18 * envelope * np.sin(2 * np.pi * hz * t / rate), np.zeros(int(rate * 0.01))]
+            [0.12 * envelope * np.sin(2 * np.pi * hz * t / rate), np.zeros(int(rate * 0.01))]
         )
     return np.concatenate(parts).astype(np.float32)
 

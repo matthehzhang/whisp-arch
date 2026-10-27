@@ -31,8 +31,13 @@ PALETTE = {
 
 
 class App:
-    def __init__(self, root):
+    def __init__(self, root, native=True):
         self.root = root
+        self.native = native and sys.platform == "darwin"
+        self.shell = None
+        self.permissions = {}
+        self.last_permission_check = 0
+        self.last_state = "setup"
         self.events = queue.Queue()
         self.path = data_dir() / "settings.json"
         self.hotkey = None
@@ -60,7 +65,14 @@ class App:
         )
         self._build()
         self._install_hotkey()
-        root.protocol("WM_DELETE_WINDOW", self.close)
+        if self.native:
+            from .mac_shell import MacShell
+
+            self.shell = MacShell(self)
+            self.refresh_permissions()
+            if self.settings.setup_complete:
+                root.withdraw()
+        root.protocol("WM_DELETE_WINDOW", self.hide_or_quit)
         root.after(25, self.pump)
         self.refresh_devices()
         # Check for a stored key without sending any audio or API request.
@@ -68,9 +80,9 @@ class App:
 
     def _build(self):
         root = self.root
-        root.title("Whisp")
-        root.geometry("600x760")
-        root.minsize(530, 710)
+        root.title("Whisp" if self.settings.setup_complete else "Set up Whisp")
+        root.geometry(f"620x{min(920, root.winfo_screenheight() - 120)}")
+        root.minsize(580, 620)
         root.configure(background=PALETTE["paper"])
         family = (
             "Segoe UI"
@@ -110,14 +122,35 @@ class App:
             borderwidth=0,
         )
 
-        page = ttk.Frame(root, padding=26)
-        page.pack(fill="both", expand=True)
+        canvas = tk.Canvas(root, background=PALETTE["paper"], highlightthickness=0)
+        scrollbar = ttk.Scrollbar(root, orient="vertical", command=canvas.yview)
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        page = ttk.Frame(canvas, padding=26)
+        page_id = canvas.create_window((0, 0), window=page, anchor="nw")
+        page.bind("<Configure>", lambda event: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda event: canvas.itemconfigure(page_id, width=event.width))
+
+        def scroll(event):
+            if not isinstance(event.widget, tk.Text):
+                units = -int(event.delta) if sys.platform == "darwin" else -int(event.delta / 120)
+                canvas.yview_scroll(units, "units")
+
+        root.bind_all("<MouseWheel>", scroll)
         title = ttk.Frame(page)
         title.pack(fill="x")
         ttk.Label(title, text="Whisp", font=(family, 25, "bold")).pack(side="left")
         ttk.Label(title, text="Your voice, in any app", style="Quiet.TLabel").pack(
             side="right", pady=8
         )
+        self.setup_intro = ttk.Label(
+            page,
+            text="Choose your shortcut, add an API key, and allow the permissions below.",
+            style="Quiet.TLabel",
+            wraplength=550,
+        )
+        self.setup_intro.pack(anchor="w", pady=(10, 0))
         self.hint = ttk.Label(page, style="Quiet.TLabel")
         self.hint.pack(anchor="w", pady=(16, 10))
         self.record = ttk.Button(
@@ -150,6 +183,16 @@ class App:
             control.grid(row=row, column=1, sticky="ew", pady=5)
             control.bind("<<ComboboxSelected>>", self.save_settings)
             self.controls.append(control)
+        self.mode = tk.StringVar(value=self.settings.mode)
+        modes = ttk.Frame(page)
+        modes.pack(fill="x", pady=(8, 4))
+        self.mode_buttons = []
+        for label, value in (("Hold to talk", "hold"), ("Press to start / stop", "toggle")):
+            button = ttk.Radiobutton(
+                modes, text=label, variable=self.mode, value=value, command=self.save_settings
+            )
+            button.pack(side="left", padx=(0, 18))
+            self.mode_buttons.append(button)
         actions = ttk.Frame(page)
         actions.pack(fill="x", pady=(6, 8))
         self.key_button = ttk.Button(actions, text="Set API key", command=self.set_key)
@@ -164,6 +207,8 @@ class App:
             style="Quiet.TLabel",
             wraplength=530,
         ).pack(anchor="w", pady=(0, 10))
+        self.haptics = tk.BooleanVar(value=self.settings.haptics)
+        self.login = tk.BooleanVar(value=self.settings.launch_at_login)
         self.sounds = tk.BooleanVar(value=self.settings.sounds)
         self.auto_paste = tk.BooleanVar(value=self.settings.auto_paste)
         self.sound_toggle = ttk.Checkbutton(
@@ -173,6 +218,15 @@ class App:
             command=self.save_settings,
         )
         self.sound_toggle.pack(anchor="w")
+        ttk.Checkbutton(
+            page,
+            text="Trackpad haptics (supported hardware)",
+            variable=self.haptics,
+            command=self.save_settings,
+        ).pack(anchor="w", pady=(4, 0))
+        ttk.Checkbutton(
+            page, text="Open at login", variable=self.login, command=self.save_settings
+        ).pack(anchor="w", pady=(4, 0))
         self.paste_toggle = ttk.Checkbutton(
             page,
             text="Paste if the destination is still focused",
@@ -181,6 +235,29 @@ class App:
         )
         self.paste_toggle.pack(anchor="w", pady=(4, 14))
 
+        self.permission_labels = {}
+        if self.native:
+            permissions = ttk.Frame(page)
+            permissions.pack(fill="x", pady=(0, 10))
+            permissions.columnconfigure(0, weight=1)
+            for row, kind in enumerate(("Microphone", "Accessibility", "Input monitoring")):
+                label = ttk.Label(permissions, text=kind)
+                label.grid(row=row, column=0, sticky="w", pady=3)
+                self.permission_labels[kind] = label
+                ttk.Button(
+                    permissions,
+                    text="Allow / settings",
+                    command=lambda kind=kind: self.allow_permission(kind),
+                ).grid(row=row, column=1, sticky="e", pady=3)
+            self.finish_button = ttk.Button(
+                page, text="Finish setup · run in menu bar", command=self.finish_setup
+            )
+            self.finish_button.pack(fill="x", pady=(0, 12))
+            ttk.Button(
+                page, text="Keyboard / Globe settings…", command=self.open_keyboard_settings
+            ).pack(anchor="w", pady=(0, 10))
+        else:
+            self.finish_button = None
         transcript_header = ttk.Frame(page)
         transcript_header.pack(fill="x")
         ttk.Label(transcript_header, text="Last transcript", font=(family, 11, "bold")).pack(
@@ -203,7 +280,7 @@ class App:
         self.notice_label = ttk.Label(page, text=self.notice, style="Quiet.TLabel", wraplength=530)
         self.notice_label.pack(fill="x")
         if sys.platform == "darwin":
-            self.notice = "Mac: allow Microphone, Accessibility, and Input Monitoring in System Settings. You may need Fn with F8."
+            self.notice = "Fn / Globe is the bottom-left key on Apple keyboards. If it opens emoji or Dictation, set its action to Do Nothing in Keyboard settings."
         elif sys.platform != "win32":
             self.notice = "Windows and macOS build. On Linux, use the existing native daemon for global hotkeys and paste."
         self.render()
@@ -254,6 +331,8 @@ class App:
             self.show_notice(
                 "Global shortcut stopped. Restart Whisp; you can still use the recording button."
             )
+        if self.native and time.monotonic() - self.last_permission_check > 2:
+            self.refresh_permissions()
         self.root.after(25, self.pump)
 
     def _install_hotkey(self):
@@ -261,7 +340,9 @@ class App:
             self.hotkey.stop()
             self.hotkey = None
         try:
-            hotkey = Hotkey(self.settings.hotkey, self._key_event, self.desktop.capture)
+            hotkey = Hotkey(
+                self.settings.hotkey, self._key_event, self.desktop.capture, self.settings.mode
+            )
             hotkey.start()
             self.hotkey = hotkey
         except Exception as exc:
@@ -275,6 +356,8 @@ class App:
                 self.controller.release(target)
             elif kind == "cancel":
                 self.controller.cancel()
+            elif kind == "lock":
+                self.show_notice("Hands-free recording: press Fn / Globe to stop. Esc cancels.")
 
         self.post(handle)
 
@@ -286,6 +369,13 @@ class App:
             self.controller.press()
 
     def play_cue(self, start):
+        if self.native and self.settings.haptics:
+            try:
+                from .mac_system import haptic
+
+                haptic(start)
+            except Exception:
+                log.warning("Trackpad haptic feedback unavailable")
         if self.settings.sounds:
             self.cues.play(start, self.settings.speaker)
 
@@ -308,8 +398,28 @@ class App:
         self.work(discover, ready)
 
     def save_settings(self, event=None):
-        old_hotkey = self.settings.hotkey
+        old_hotkey, old_mode, old_login = (
+            self.settings.hotkey,
+            self.settings.mode,
+            self.settings.launch_at_login,
+        )
         self.settings.hotkey = self.shortcut.get()
+        self.settings.mode = self.mode.get()
+        self.settings.haptics = self.haptics.get()
+        self.settings.launch_at_login = self.login.get()
+        if (
+            self.native
+            and self.settings.setup_complete
+            and old_login != self.settings.launch_at_login
+        ):
+            try:
+                from .mac_system import set_login_enabled
+
+                set_login_enabled(self.settings.launch_at_login)
+            except Exception as exc:
+                self.settings.launch_at_login = old_login
+                self.login.set(old_login)
+                self.show_notice(str(exc))
         self.settings.microphone = (
             "" if self.microphone.get() == "System default" else self.microphone.get()
         )
@@ -319,7 +429,7 @@ class App:
             self.settings.save(self.path)
         except OSError as exc:
             self.show_notice(f"Could not save settings: {exc}")
-        if old_hotkey != self.settings.hotkey:
+        if old_hotkey != self.settings.hotkey or old_mode != self.settings.mode:
             self._install_hotkey()
         self.render()
 
@@ -373,7 +483,27 @@ class App:
         state = self.controller.state
         idle = state in ("setup", "ready")
         recording = state == "recording"
-        self.hint.configure(text=f"Hold {self.settings.hotkey} in any app, or click to record.")
+        verb = "Hold" if self.settings.mode == "hold" else "Press"
+        self.hint.configure(text=f"{verb} {self.settings.hotkey} to dictate. Esc cancels.")
+        if (
+            state == "ready"
+            and self.last_state not in ("ready", "loading", "setup")
+            and self.hotkey
+        ):
+            self.hotkey.reset_session()
+        self.last_state = state
+        if self.shell:
+            self.shell.update(state, self.controller.message)
+        if self.finish_button:
+            allowed = (
+                state == "ready"
+                and all(self.permissions.values())
+                and len(self.permissions) == 3
+                and self.hotkey is not None
+            )
+            self.finish_button.state(["!disabled"] if allowed else ["disabled"])
+        for button in self.mode_buttons:
+            button.state(["!disabled"] if idle else ["disabled"])
         self.status.configure(text=self.controller.message)
         self.record.configure(
             style="Live.TButton" if recording else "Record.TButton",
@@ -406,16 +536,100 @@ class App:
             self.text.configure(state="disabled")
         self.notice_label.configure(text=self.notice)
 
-    def close(self):
+    def show_settings(self):
+        self.root.deiconify()
+        self.root.lift()
+        if self.native:
+            from AppKit import NSApplication
+
+            NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+
+    def hide_or_quit(self):
+        if self.shell:
+            self.root.withdraw()
+        else:
+            self.quit()
+
+    def open_keyboard_settings(self):
+        from .mac_system import open_settings
+
+        open_settings("Keyboard")
+
+    def allow_permission(self, kind):
+        from .mac_system import request_permission
+
+        request_permission(kind, lambda: self.post(self.refresh_permissions))
+
+    def refresh_permissions(self):
+        from .mac_system import login_enabled, permission_status
+
+        self.last_permission_check = time.monotonic()
+        previous = self.permissions
+        try:
+            self.permissions = permission_status()
+            for kind, allowed in self.permissions.items():
+                self.permission_labels[kind].configure(
+                    text=f"{kind} · {'Allowed' if allowed else 'Permission needed'}"
+                )
+            if self.permissions != previous:
+                if not all(self.permissions.values()) and self.controller.session:
+                    self.controller.cancel()
+                if all(self.permissions.values()):
+                    self._install_hotkey()
+            elif all(self.permissions.values()) and self.hotkey is None:
+                self._install_hotkey()
+            if self.settings.setup_complete:
+                actual = login_enabled()
+                self.login.set(actual)
+                self.settings.launch_at_login = actual
+        except Exception as exc:
+            self.show_notice(f"Could not check permissions: {exc}")
+        self.render()
+
+    def finish_setup(self):
+        if (
+            self.controller.state != "ready"
+            or not self.permissions
+            or not all(self.permissions.values())
+        ):
+            return
+        try:
+            from .mac_system import set_login_enabled
+
+            set_login_enabled(self.login.get())
+            self.settings.launch_at_login = self.login.get()
+            self.settings.setup_complete = True
+            self.settings.save(self.path)
+        except Exception as exc:
+            self.show_notice(str(exc))
+            return
+        self.root.title("Whisp")
+        self.setup_intro.configure(
+            text="Whisp runs in your menu bar. Change these settings any time."
+        )
+        self.root.withdraw()
+
+    def quit(self):
         self.closing = True
         self.controller.close()
         if self.hotkey:
             self.hotkey.stop()
+        if self.shell:
+            self.shell.close()
         # Daemon workers cannot inject after close; no Tk callbacks are run.
         self.root.destroy()
 
 
 def run():
-    root = tk.Tk()
-    App(root)
-    root.mainloop()
+    from .instance import Instance
+
+    instance = Instance(data_dir())
+    if not instance.acquire():
+        return
+    try:
+        root = tk.Tk()
+        app = App(root)
+        instance.listen(lambda: app.post(app.show_settings))
+        root.mainloop()
+    finally:
+        instance.close()

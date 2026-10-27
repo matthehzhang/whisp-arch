@@ -5,7 +5,7 @@ import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-HOTKEYS = ("F8", "F9", "F10")
+HOTKEYS = ("Fn / Globe", "F8", "F9", "F10")
 
 
 def data_dir() -> Path:
@@ -16,7 +16,11 @@ def data_dir() -> Path:
 
 @dataclass
 class Settings:
-    hotkey: str = "F8"
+    hotkey: str = "Fn / Globe"
+    mode: str = "hold"
+    haptics: bool = True
+    launch_at_login: bool = True
+    setup_complete: bool = False
     microphone: str = ""
     speaker: str = ""
     sounds: bool = True
@@ -34,7 +38,9 @@ class Settings:
             if key in raw and type(raw[key]) is type(getattr(settings, key)):
                 setattr(settings, key, raw[key])
         if settings.hotkey not in HOTKEYS:
-            settings.hotkey = "F8"
+            settings.hotkey = "Fn / Globe"
+        if settings.mode not in ("hold", "toggle"):
+            settings.mode = "hold"
         return settings
 
     def save(self, path: Path) -> None:

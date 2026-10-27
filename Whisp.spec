@@ -1,5 +1,6 @@
 # Build on the target OS/architecture; no local model or private credentials.
 import sys
+import os
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 datas, binaries, hiddenimports = [], [], []
@@ -19,12 +20,16 @@ a = Analysis(["launcher.py"], pathex=[SPECPATH], binaries=binaries, datas=datas,
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="Whisp", debug=False,
           strip=False, upx=False, console=False, disable_windowed_traceback=False,
-          target_arch=None, codesign_identity=None, entitlements_file=None)
+          target_arch=None, codesign_identity=os.environ.get("WHISP_SIGN_IDENTITY"), entitlements_file=None)
 bundle = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="Whisp")
 if sys.platform == "darwin":
     app = BUNDLE(bundle, name="Whisp.app", bundle_identifier="io.github.matthehzhang.whisp",
+                 icon="assets/Whisp.icns",
                  info_plist={
-                     "CFBundleShortVersionString": "0.1.0",
-                     "NSMicrophoneUsageDescription": "Whisp records your voice while you dictate and transcribes it on this Mac.",
+                     "CFBundleShortVersionString": "0.2.0",
+                     "CFBundleVersion": "2",
+                     "LSUIElement": True,
+                     "LSMinimumSystemVersion": "13.0",
+                     "NSMicrophoneUsageDescription": "Whisp records while you dictate and sends audio to Deepgram using your own API key.",
                      "NSHighResolutionCapable": True,
                  })

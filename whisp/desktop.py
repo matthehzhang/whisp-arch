@@ -173,6 +173,7 @@ class Mac:
             return None
         pid = app.processIdentifier()
         element = self.ax.AXUIElementCreateApplication(pid)
+        self.ax.AXUIElementSetMessagingTimeout(element, 0.1)
         window = self._attribute(element, self.ax.kAXFocusedWindowAttribute)
         field = self._attribute(element, self.ax.kAXFocusedUIElementAttribute)
         if window is None or field is None:
