@@ -1,11 +1,11 @@
-name: Portable desktop builds
+name: Windows desktop build
 
 on:
   workflow_dispatch:
   push:
-    paths: ["portable/**", ".github/workflows/portable.yml"]
+    branches: [windows]
   pull_request:
-    paths: ["portable/**", ".github/workflows/portable.yml"]
+    branches: [windows]
 
 permissions:
   contents: read
@@ -18,15 +18,10 @@ jobs:
         include:
           - os: windows-latest
             label: windows-x64
-          - os: macos-15
-            label: macos-apple-silicon
-          - os: macos-15-intel
-            label: macos-intel
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
     defaults:
       run:
-        working-directory: portable
         shell: bash
     steps:
       - uses: actions/checkout@v4
@@ -36,7 +31,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-          cache-dependency-glob: portable/uv.lock
+          cache-dependency-glob: uv.lock
       - name: Install locked dependencies
         run: uv sync --locked --python 3.12
       - name: Lint and test lifecycle, audio, and delivery
@@ -64,9 +59,9 @@ jobs:
         with:
           name: Whisp-${{ matrix.label }}
           path: |
-            portable/artifacts/*.zip
-            portable/README.md
-            portable/source-smoke.json
-            portable/frozen-smoke.json
+            artifacts/*.zip
+            README.md
+            source-smoke.json
+            frozen-smoke.json
           if-no-files-found: error
           retention-days: 14

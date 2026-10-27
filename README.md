@@ -1,97 +1,134 @@
-# whisp-arch
+# Whisp for Windows
 
-Push-to-talk dictation daemon for Arch + Hyprland (Wayland). **Hold Right Ctrl**,
-speak into the **Sony WH-1000XM5** headset mic, release — the transcript is typed
-into the focused window via `wtype`. Dictation is **gated on the headset mic**:
-the daemon only arms while the XM5 is connected, so the laptop mic is never used.
-A waybar module shows state and click-toggles the daemon.
+This is the `windows` branch. [Mac / main](https://github.com/matthehzhang/whisp-arch) · [Linux](https://github.com/matthehzhang/whisp-arch/tree/linux).
 
-Single Rust daemon, no GUI toolkit. Local whisper.cpp (via `whisper-rs`); nothing
-leaves the machine. MVP is hold-to-talk only — no double-tap lock, no LLM
-cleanup, deterministic silence/hallucination gating only.
+Hold **F8**, speak, and release to transcribe using **your own Deepgram API key**.
+A rising sound marks recording start; a falling sound marks recording stop.
+Whisp copies the result and sends a paste shortcut if the destination still has
+focus. **Esc** cancels. You can also click Record / Stop and copy manually.
 
-## How it works
+This branch contains the Windows desktop client. It uses Deepgram Nova-3
+with smart formatting and multilingual recognition, without Matthew's private
+server, Tailscale, or a local speech-model download. It does not yet include
+streaming text or the Linux setup's additional LLM cleanup.
 
-- **Key = Right Ctrl** (listen-only evdev; your normal Ctrl usage is unaffected —
-  the daemon never grabs the device). Press → record, release → transcribe +
-  inject. **Esc** cancels an in-flight session.
-- **Headset-gated**: a 2 s watcher matches the XM5's non-monitor `bluez` pulse
-  source by MAC. No headset → the module shows `missing` and PTT does nothing.
-- **Injection safety**: text is never typed while any modifier (Ctrl/Alt/Shift/
-  Super) or the PTT key is still physically held — the daemon polls the real
-  key state (EVIOCGKEY) for up to 5 s, then drops the text.
-- **Silence/hallucination gating**: clips < 300 ms or peak < 0.01 are dropped;
-  segments with `no_speech_prob > 0.6` are dropped; short whisper.cpp silence
-  hallucinations ("thank you", "thanks for watching", "you", "bye") are dropped.
+## Status
 
-## Requirements
+Source and a native build workflow are provided. A successful build does not
+verify real microphone capture, OS permission prompts, or paste in another app;
+complete the manual checks below before treating a package as a tested release.
+Preview packages are not Developer ID signed/notarized or Windows publisher signed.
 
-- Wayland compositor with virtual-keyboard support (Hyprland) and **`wtype`**.
-- **PipeWire** with `pipewire-pulse`.
-- Membership in the **`input`** group (to read `/dev/input/event*`).
-- A whisper ggml model in `~/.local/share/whisp-arch/models/` — prefers
-  `ggml-small.en.bin`, falls back to `ggml-base.en.bin`:
+## Install a preview package
 
-  ```sh
-  mkdir -p ~/.local/share/whisp-arch/models
-  cd ~/.local/share/whisp-arch/models
-  # e.g. from the whisper.cpp model repo:
-  curl -L -o ggml-small.en.bin \
-    https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin
-  ```
+Get your computer's artifact from a successful **Windows desktop build** run in
+this repository's GitHub Actions. Extract the artifact, then the platform ZIP.
 
-## Build & install
+- **Windows x64:** keep the entire `Whisp` folder together and open `Whisp.exe`.
+  Windows may show an unknown-publisher notice for this unsigned preview.
+- **Apple Silicon Mac:** use the Apple Silicon artifact; move `Whisp.app` to Applications.
+- **Intel Mac:** use the Intel artifact; move `Whisp.app` to Applications.
+  macOS may block this unsigned preview. For a build you trust, use **Open Anyway**
+  in System Settings → Privacy & Security after opening it. Signing/notarization
+  is needed for smooth public distribution.
+
+Choose **Set API key** and paste your own key from the
+[Deepgram console](https://console.deepgram.com/). The key is saved in **Windows
+Credential Manager** or **macOS Keychain**, never in the repository or settings
+file. **Forget key** removes it. Startup checks that a key is stored; the first
+transcription verifies it against the service. Internet and Deepgram account
+credit are required; requests are billed to your account. Whisp does not retry
+billable requests automatically.
+
+Audio is uploaded to Deepgram over HTTPS after you stop recording. Cancel before
+upload to discard it; cancelling during a request prevents pasting but cannot
+recall audio already sent or reverse provider charges. Provider handling of the
+audio is governed by your Deepgram account and its terms. No key or account is
+shared with Matthew.
+
+## Permissions and controls
+
+On macOS, allow **Microphone**, **Accessibility**, and **Input Monitoring** for
+Whisp in System Settings → Privacy & Security, then restart. From source, the
+Terminal or Python launcher may need these permissions instead. Function keys
+may require **Fn** or enabling standard F1–F12 keys in keyboard settings.
+
+On Windows, enable microphone access for desktop apps in privacy settings.
+Paste into administrator apps may be blocked; use Copy and paste manually.
+
+- Select the microphone and sound output. Pick your speakers if you want people
+  nearby to hear the cues while you wear headphones.
+- F8/F9/F10 are available. The shortcut is listened to, not suppressed: choose a
+  key that does not trigger another action in the app you use.
+- Keep the destination focused until transcription finishes. If focus changed,
+  Whisp keeps the transcript on the clipboard instead of switching applications.
+  Apps that do not expose focus information use clipboard-only delivery.
+- Paste uses Ctrl+V or Command+V. Some terminals require a different shortcut;
+  paste manually there. An OS keystroke API cannot confirm the app accepted paste.
+- Recording is capped at 90 seconds. Release keeps a 200 ms tail to retain the
+  end of the last word. A new recording waits for the previous request to finish.
+- Minimize to keep the shortcut active; closing quits Whisp.
+- The last transcript stays in memory until quit and on the clipboard until
+  replaced. Whisp does not save audio or transcript history to disk.
+
+## Run from source
+
+Use Python **3.11 or 3.12**, with Tk included (the python.org installer includes it
+on Windows and macOS). Windows ARM is not a native build target in this preview.
 
 ```sh
-cargo build --release          # -> target/release/whisp-arch
+python -m venv .venv
+# Windows:
+.venv\Scripts\python -m pip install .
+.venv\Scripts\python -m whisp
+# macOS:
+.venv/bin/python -m pip install .
+.venv/bin/python -m whisp
 ```
 
-Run it directly to test, or install the systemd **user** unit:
+For reproducible development/builds, install uv and run:
 
 ```sh
-install -Dm644 packaging/whisp-arch.service \
-  ~/.config/systemd/user/whisp-arch.service
-# ensure wtype can reach the compositor:
-systemctl --user import-environment WAYLAND_DISPLAY XDG_RUNTIME_DIR
-systemctl --user enable --now whisp-arch.service
+uv sync --locked --python 3.12
+uv run pytest -q
+uv run python -m whisp
+uv run pyinstaller --noconfirm Whisp.spec
+uv run python package.py
 ```
 
-The unit is `WantedBy=graphical-session.target`, so it starts with your Wayland
-session. Logs: `journalctl --user -u whisp-arch -f`.
+Build on the target OS and CPU architecture; PyInstaller does not cross-compile
+these apps. The workflow builds Windows x64, macOS arm64, and macOS x64. Frozen
+runtime checks construct the actual UI in a hidden window, verify native imports,
+credential-backend imports, certificate bundles, and resampling. They do not
+record, type, read or write credentials, or make a paid API call.
 
-## Configure the headset
+Settings and bounded diagnostic logs live in `%LOCALAPPDATA%\Whisp` on Windows or
+`~/Library/Application Support/Whisp` on Mac. **Forget key** before removing the app
+to delete the stored credential. Delete that directory to reset other settings.
+Audio, transcripts, and keys are excluded from logs.
 
-The matched MAC is currently hard-coded in `src/audio.rs`
-(`58:18:62:87:81:36`). Point it at your own XM5 by editing `HEADSET_MAC` there
-and rebuilding.
+## Manual release checks
 
-## waybar
+Run on a Windows PC and each supported Mac architecture:
 
-The daemon writes `$XDG_RUNTIME_DIR/whisp-arch/status.json` (waybar JSON) on
-every state change and serves a `toggle`/`status` control socket at
-`$XDG_RUNTIME_DIR/whisp-arch.sock`. Wire it up with the exec script and config
-block in **[`waybar/README-snippet.md`](waybar/README-snippet.md)** — copy
-`waybar/whisper.sh`, add the `custom/whisper` module (`interval: 1`,
-`return-type: json`, `on-click: whisp-arch --toggle`), and the CSS classes
-(`.ready` `.recording` `.transcribing` `.disabled` `.missing`).
+1. Open a fresh package without Python installed; save your key and grant permissions.
+2. Hold/release in a text editor. Confirm both sounds, full final word, and pasted text.
+3. Tap rapidly, hold through repeats, and press Esc during capture and transcription.
+   Cancelled results must never paste later.
+4. Switch windows or text fields before the request ends. Confirm clipboard recovery.
+   Some apps reuse the same native/accessibility field for internal editors; use
+   clipboard-only mode where focus detection cannot distinguish them.
+5. Deny/revoke microphone and keyboard permissions; verify recovery messages.
+6. Disconnect/reconnect a selected mic, refresh, and choose an available input.
+7. Test speakers/headphones, including cue volume and speech recognition.
+8. Test an invalid key, no internet, service failure, and key removal/replacement.
+9. Test sleep/wake and the 90-second recording limit.
 
-## CLI
+## Implementation references
 
-```
-whisp-arch            run the daemon (default)
-whisp-arch --toggle   flip enabled via the control socket (waybar on-click)
-whisp-arch --status   print the current waybar status JSON line
-```
-
-## Layout
-
-| File | Responsibility |
-|---|---|
-| `src/main.rs`, `src/state.rs` | state-owner loop + shared types (integration) |
-| `src/hotkey.rs` | evdev Right-Ctrl listener + modifier-state queries |
-| `src/audio.rs` | headset detection + pulse capture → 16 kHz mono |
-| `src/asr.rs` | whisper-rs wrapper + silence/hallucination gating |
-| `src/inject.rs` | `wtype` injection + safe-to-inject gating |
-| `src/status.rs` | status file + control socket |
-| `waybar/` | waybar exec script + config snippet |
-| `packaging/` | systemd user unit |
+- [Deepgram prerecorded transcription](https://developers.deepgram.com/docs/pre-recorded-audio).
+- [Native credential stores](https://keyring.readthedocs.io/en/stable/).
+- [PortAudio/sounddevice](https://python-sounddevice.readthedocs.io/en/latest/installation.html).
+- [pynput permissions](https://pynput.readthedocs.io/en/latest/limitations.html).
+- [Windows SendInput restrictions](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput).
+- [PyInstaller packaging](https://pyinstaller.org/en/stable/feature-notes.html).
