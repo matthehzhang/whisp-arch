@@ -28,6 +28,8 @@ def test_login_registration_requires_installed_bundle(monkeypatch):
     monkeypatch.setattr(mac_system, "installed_bundle", lambda: None)
     with pytest.raises(RuntimeError, match="Applications"):
         mac_system.set_login_enabled(True)
+    # Source/dev launches can finish setup with automatic startup disabled.
+    mac_system.set_login_enabled(False)
 
 
 @pytest.mark.parametrize("enabled", [True, False])

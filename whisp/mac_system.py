@@ -80,7 +80,9 @@ def set_login_enabled(enabled):
     )
 
     if not installed_bundle():
-        raise RuntimeError("Move Whisp.app into Applications before enabling Open at login.")
+        if enabled:
+            raise RuntimeError("Move Whisp.app into Applications before enabling Open at login.")
+        return
     service = SMAppService.mainAppService()
     if enabled:
         if service.status() != SMAppServiceStatusEnabled:
